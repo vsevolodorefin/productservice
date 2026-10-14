@@ -14,3 +14,27 @@ management:
   endpoint:
     health:
       show-details: never
+
+# Each source is also capped by the remaining request budget.
+aggregation:
+  request-timeout: 400ms
+  catalog-timeout: 150ms
+  pricing-timeout: 180ms
+  availability-timeout: 200ms
+  customer-timeout: 120ms
+
+# Modes: NORMAL (random failures), FAIL (forced failure), SLOW (forced delay).
+# Set reliability to 1.0 for reproducible success without random failures.
+mock:
+  catalog:
+    latency: 50ms
+    reliability: 0.999
+  pricing:
+    latency: 80ms
+    reliability: 0.995
+  availability:
+    latency: 100ms
+    reliability: 0.98
+  customer:
+    latency: 60ms
+    reliability: 0.99

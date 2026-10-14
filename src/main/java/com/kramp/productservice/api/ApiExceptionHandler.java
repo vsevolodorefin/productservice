@@ -1,6 +1,5 @@
 package com.kramp.productservice.api;
 
-import com.kramp.productservice.application.AggregationNotImplementedException;
 import com.kramp.productservice.domain.UnsupportedMarketException;
 import com.kramp.productservice.upstream.*;
 import java.net.URI;
@@ -18,11 +17,6 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(UnsupportedMarketException.class)
     ProblemDetail unsupportedMarket(UnsupportedMarketException exception) {
         return problem(HttpStatus.BAD_REQUEST, "unsupported-market", exception.getMessage());
-    }
-
-    @ExceptionHandler(AggregationNotImplementedException.class)
-    ProblemDetail notImplemented(AggregationNotImplementedException exception) {
-        return problem(HttpStatus.NOT_IMPLEMENTED, "aggregation-not-implemented", exception.getMessage());
     }
 
     @ExceptionHandler(ProductNotFoundException.class)

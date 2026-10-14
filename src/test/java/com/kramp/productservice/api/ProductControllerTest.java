@@ -104,7 +104,6 @@ class ProductControllerTest {
         assertFailure(new ProductNotFoundException("P-123"), 404, "product-not-found");
         assertFailure(new UpstreamUnavailableException("catalog", null), 503, "upstream-unavailable");
         assertFailure(new UpstreamTimeoutException("catalog", null), 504, "upstream-timeout");
-        assertFailure(new AggregationNotImplementedException(), 501, "aggregation-not-implemented");
     }
 
     @Test
