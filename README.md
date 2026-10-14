@@ -4,8 +4,11 @@ Backend engineering assignment: a market-aware product information aggregator.
 
 ## Current scope
 
-This is the project skeleton. Product endpoints, upstream mocks, aggregation,
-timeouts and fallback behavior are not implemented yet.
+The REST contract, domain models, input validation, Problem Details error handling
+and four upstream client interfaces are implemented and covered by contract tests.
+Upstream mocks, aggregation, timeouts and fallback execution are not implemented yet.
+A valid product request currently returns `501 Not Implemented`; this temporary
+application service will be replaced by the aggregator.
 
 ## Requirements
 
@@ -39,23 +42,100 @@ Alternatively, after building:
 java -jar target/productservice-0.0.1-SNAPSHOT.jar
 ```
 
-## Planned structure
+## Structure
 
 - `api`: REST controllers, request/response DTOs and error handling.
 - `application`: aggregation orchestration, deadlines and fallback policies.
 - `domain`: product, pricing, availability and customer models.
 - `upstream`: client interfaces and simulated upstream implementations.
 
-Packages will be introduced as their implementations are added.
+The application layer returns domain data; the API layer maps it to the public response.
 
-## Planned behavior
+## API contract
 
 `GET /api/v1/products/{productId}?market=pl-PL&customerId=customer-123`
 
-Catalog is required. Pricing and availability failures produce a partial response.
-Customer failure falls back to a standard, non-personalized response.
-Supported markets, localization rules and timeout budgets will be documented
-with the implementation.
+### Inputs
+
+- `productId`: 1-100 ASCII letters, digits, dots, underscores or hyphens; starts with a letter or digit.
+- `market`: required, exactly `nl-NL`, `de-DE` or `pl-PL` (case-sensitive).
+- `customerId`: optional; when supplied, follows the same rules as `productId`. Empty values are invalid.
+
+Market defines the language and currency: Dutch/EUR, German/EUR, Polish/PLN.
+IDs are opaque strings. These validation rules are a project choice, not specified by the assignment.
+
+### Response
+
+Example of the intended partial response (not yet served by the pending implementation):
+
+```json
+{
+  "market": "pl-PL",
+  "product": {
+    "id": "P-123",
+    "name": "Filtr",
+    "description": "Filtr oleju",
+    "specifications": {"type": "oil"},
+    "images": ["https://example.com/filter.jpg"]
+  },
+  "pricing": {"status": "UNAVAILABLE", "data": null},
+  "availability": {"status": "UNKNOWN", "data": null},
+  "personalization": "STANDARD"
+}
+```
+
+Available pricing has `status: AVAILABLE` and `data` containing `basePrice`,
+`discountAmount`, `finalPrice` and an ISO currency code. Amounts are decimals;
+`discountAmount` is an amount, not a percentage. Pricing owns calculation and rounding.
+Available stock has `status: AVAILABLE` and `data` containing nonnegative `stockLevel`,
+`warehouseLocation` and nullable `expectedDeliveryDate` (`YYYY-MM-DD`).
+A stock level of zero means out of stock; `UNKNOWN` means no stock data is available.
+Personalization is `STANDARD` or `PERSONALIZED`; customer IDs and preferences are not exposed.
+
+Catalog is required. Pricing and availability failures will produce a partial `200` response.
+Customer failure will use `CustomerContext.standard()` for pricing and return `STANDARD`.
+These fallback policies will be implemented in the aggregation step.
+
+### Errors
+
+All errors use `application/problem+json` (RFC 9457), with `type`, `title`, `status`,
+`detail` and `instance`. Custom problem types use `urn:productservice:problem:<code>`.
+
+| HTTP status | Meaning |
+| --- | --- |
+| 400 | Missing/invalid input or unsupported market |
+| 404 | Catalog confirms the product does not exist |
+| 503 | Required upstream data is unavailable |
+| 504 | Required upstream data timed out |
+| 500 | Unexpected server error; internal details are not returned |
+| 501 | Temporary: aggregation has not been implemented |
+
+```json
+{
+  "type": "urn:productservice:problem:unsupported-market",
+  "title": "Bad Request",
+  "status": 400,
+  "detail": "Unsupported market. Supported values: nl-NL, de-DE, pl-PL.",
+  "instance": "/api/v1/products/P-123"
+}
+```
+
+### Upstream contracts
+
+Clients are blocking interfaces, independent of Spring and REST DTOs. They return
+non-null domain data or throw typed exceptions. Concurrency and fallback belong to
+the future aggregator; a timeout exception also represents an aggregator deadline.
+Only Catalog may report `ProductNotFoundException`. Failures from optional sources
+must be caught by the aggregator before they reach the REST exception handler.
+Pricing receives the resolved customer context rather than looking up the customer again.
+The customer client is called only when a customer ID is provided.
+
+### Tests
+
+Run `./mvnw.cmd verify` (Windows) or `sh mvnw verify` (Linux/macOS).
+Contract tests verify all markets, request forwarding, input validation, partial JSON,
+zero stock, currency serialization, error status mappings and hidden internal details.
+They replace `ProductQuery` with a deterministic stub and do not claim to test upstream fallback execution.
 
 ## Design decisions
 
