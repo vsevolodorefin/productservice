@@ -9,6 +9,10 @@ calls, independent timeouts, a shared request budget and partial-failure fallbac
 No database or external services are required. Contract, aggregation and mock tests
 cover successful responses, failures, timeouts, localization and cancellation.
 
+The required REST behavior is implemented: market-aware product data, optional customer
+context, realistic simulated upstream failures and partial responses. gRPC is an optional
+bonus and is not implemented. The design question answered below is Option A.
+
 ## Requirements
 
 - JDK 21
@@ -17,11 +21,13 @@ cover successful responses, failures, timeouts, localization and cancellation.
 
 ## Build and run
 
-On Windows, select the installed JDK for the current PowerShell session:
+On Windows, select your JDK 21 installation for the current PowerShell session.
+Replace the example path; skip the environment assignments if Java 21 is already selected:
 
 ```powershell
-$env:JAVA_HOME = 'C:\Users\gring\.jdks\temurin-21.0.11'
+$env:JAVA_HOME = 'C:\path\to\jdk-21'
 $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
+java -version
 ./mvnw.cmd clean verify
 ./mvnw.cmd spring-boot:run
 ```
@@ -41,12 +47,48 @@ Alternatively, after building:
 java -jar target/productservice-0.0.1-SNAPSHOT.jar
 ```
 
+The default port is 8080; override it with `--server.port=8081` when running the JAR.
+Mocks can fail randomly by default, as required by the assignment. See the scenario
+section for configuration that disables random errors or forces a specific failure.
+
+With the application running, request a Polish product for a VIP customer:
+
+```powershell
+Invoke-RestMethod 'http://localhost:8080/api/v1/products/P-123?market=pl-PL&customerId=C-1' | ConvertTo-Json -Depth 10
+```
+
+Or use curl:
+
+```shell
+curl -i 'http://localhost:8080/api/v1/products/P-123?market=pl-PL&customerId=C-1'
+```
+
+On successful customer and pricing calls, the VIP price is 100 PLN before discount,
+10 PLN discount and 90 PLN final price. Omit `customerId` for standard pricing.
+Use `P-456` to see known zero stock, or an unknown product ID to exercise Catalog's 404.
+
 ## Structure
 
-- `api`: REST controllers, request/response DTOs and error handling.
-- `application`: aggregation orchestration, deadlines and fallback policies.
-- `domain`: product, pricing, availability and customer models.
-- `upstream`: client interfaces and simulated upstream implementations.
+```text
+src/main/java/com/kramp/productservice/
+  ProductServiceApplication.java
+  api/              REST controller, response DTOs and Problem Details
+  application/      Aggregation, deadlines, cancellation and fallback
+  domain/           Product, pricing, stock, market and customer models
+  upstream/         Client interfaces and typed failures
+    mock/           In-process mocks and simulation settings
+src/main/resources/application.yaml
+src/test/java/com/kramp/productservice/
+  api/              REST contract and response invariants
+  application/      Aggregation, concurrency and timeout tests
+  upstream/mock/    Mock data and simulation tests
+```
+
+`ProductController` validates inputs and delegates through `ProductQuery` to
+`ProductAggregator`. `UpstreamCalls` owns each request's asynchronous calls and
+cancellation. `AggregationProperties` defines time budgets; `MockProperties` and
+`MockSimulation` define upstream behavior. `ApiExceptionHandler` maps failures
+to HTTP Problem Details.
 
 The application layer returns domain data; the API layer maps it to the public response.
 
@@ -72,7 +114,7 @@ Example of a partial response when pricing and stock are unavailable:
   "market": "pl-PL",
   "product": {
     "id": "P-123",
-    "name": "Filtr",
+    "name": "Filtr oleju",
     "description": "Część zamienna do maszyn rolniczych",
     "specifications": {"sku": "P-123"},
     "images": []
@@ -91,7 +133,7 @@ Available stock has `status: AVAILABLE` and `data` containing nonnegative `stock
 A stock level of zero means out of stock; `UNKNOWN` means no stock data is available.
 Personalization is `STANDARD` or `PERSONALIZED`; customer IDs and preferences are not exposed.
 
-Catalog is required. Pricing and availability failures will produce a partial `200` response.
+Catalog is required. Pricing and availability failures produce a partial `200` response.
 Customer failure uses `CustomerContext.standard()` for pricing and returns `STANDARD`.
 Personalization reflects the resolved customer context, even when pricing is unavailable.
 
@@ -132,6 +174,8 @@ The customer client is called only when a customer ID is provided.
 ### Tests
 
 Run `./mvnw.cmd verify` (Windows) or `sh mvnw verify` (Linux/macOS).
+The current suite contains 33 tests. Maven prints the results and stores reports
+under `target/surefire-reports/`.
 Contract tests verify all markets, request forwarding, input validation, partial JSON,
 zero stock, currency serialization, error status mappings and hidden internal details.
 Aggregation tests separately verify parallel calls, source deadlines, shared budget,
@@ -145,6 +189,26 @@ customer ID is supplied. Pricing starts after Customer returns or falls back to 
 context. This dependency is a design choice: the assignment does not specify how Pricing
 obtains customer context. Passing it explicitly prevents a failed lookup from retaining
 a personalized discount.
+
+```mermaid
+flowchart LR
+    Request[Validated request] --> Catalog
+    Request --> Availability
+    Request --> Customer[Customer or standard context]
+    Customer --> Pricing
+    Catalog --> Response[Aggregated response]
+    Availability --> Response
+    Pricing --> Response
+    Customer --> Response
+```
+
+| Source failure | Result |
+| --- | --- |
+| Catalog error / timeout | 503 / 504; remaining calls are cancelled |
+| Catalog product missing | 404; remaining calls are cancelled |
+| Pricing error / timeout | 200, `pricing.status = UNAVAILABLE`, null price data |
+| Availability error / timeout | 200, `availability.status = UNKNOWN`, null stock data |
+| Customer error / timeout | Standard context is passed to Pricing; no personalized discount |
 
 | Source | Typical latency | Reliability | Timeout |
 | --- | --- | --- | --- |
@@ -181,11 +245,13 @@ variation and independent random failures sampled after the delay. Reliability i
 long-run probability, not an exact ratio per test run. FAIL forces an error after the
 normal delay; SLOW forces the slow delay and ignores random failure for repeatable tests.
 
-For deterministic success, launch the packaged JAR with:
+To disable random errors, launch the packaged JAR with:
 
 ```shell
 java -jar target/productservice-0.0.1-SNAPSHOT.jar --mock.catalog.reliability=1 --mock.pricing.reliability=1 --mock.availability.reliability=1 --mock.customer.reliability=1
 ```
+
+Latency variation and deadlines still apply: reliability 1 does not disable timeouts.
 
 Append one of these overrides to that command:
 
@@ -198,6 +264,10 @@ Append one of these overrides to that command:
 --mock.catalog.mode=SLOW         # 504
 ```
 
+Scenario comments describe requests for an existing demo product. Supply `customerId=C-1`
+when testing Customer failures, since anonymous requests skip that source. Stop the
+previous process before restarting with a different scenario, or select another port.
+
 Budgets are configured under `aggregation`: `request-timeout`, `catalog-timeout`,
 `pricing-timeout`, `availability-timeout`, `customer-timeout`. Invalid durations and
 reliability values fail application startup.
@@ -208,6 +278,19 @@ reliability values fail application startup.
 - Spring MVC for REST, Bean Validation for input validation, Actuator for health.
 - No database is needed for the simulated upstream services.
 - Aggregation logic is separated from upstream implementations.
+
+### Why the mocks run inside the application
+
+The assignment asks for simulated upstream implementations with latency and failures;
+it does not require separate processes or HTTP connections. In-process adapters keep
+local setup small and focus the solution on aggregation, required versus optional data,
+deadlines and fallback within the suggested 3-4 hour scope.
+
+The trade-off is that these tests do not simulate network connections, HTTP status
+decoding or transport cancellation. To cover those, replace the client adapters with
+HTTP implementations and run a separate mock server with four endpoints. The aggregation
+and domain layers can remain the same. A database, Docker Compose and separate mock
+applications are not needed to run the current solution.
 
 ## Design question: related products (Option A)
 
